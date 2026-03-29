@@ -20,12 +20,16 @@ sudo ./sys_call_tracer.py -c "ls -la /tmp"
 
 # List all available syscalls
 ./sys_call_tracer.py -l
+
+# List syscall categories
+./sys_call_tracer.py --list-categories
 ```
 
 ## Usage
 
 ```
-usage: sys_call_tracer.py [-h] [-p PID] [-c COMMAND] [-n COUNT] [-f FILTER] [-l] [-v]
+usage: sys_call_tracer.py [-h] [-p PID] [-c COMMAND] [-n COUNT] [-f FILTER] [-x EXCLUDE]
+                          [-C CATEGORY] [-X EXCLUDE_CATEGORY] [-l] [--list-categories] [-v]
 
 Trace and log system calls in real time
 
@@ -37,8 +41,15 @@ options:
   -n COUNT, --count COUNT
                         Number of syscalls to trace
   -f FILTER, --filter FILTER
-                        Comma-separated list of syscalls to filter
+                        Comma-separated list of syscalls to include (supports wildcards: *, ?)
+  -x EXCLUDE, --exclude EXCLUDE
+                        Comma-separated list of syscalls to exclude (supports wildcards: *, ?)
+  -C CATEGORY, --category CATEGORY
+                        Comma-separated list of categories to include
+  -X EXCLUDE_CATEGORY, --exclude-category EXCLUDE_CATEGORY
+                        Comma-separated list of categories to exclude
   -l, --list            List all available syscalls
+  --list-categories     List available syscall categories
   -v, --verbose         Enable verbose output
 ```
 
@@ -56,10 +67,47 @@ sudo ./sys_call_tracer.py -p 1234
 sudo ./sys_call_tracer.py -c "cat /etc/passwd"
 ```
 
-### Filter to only see file-related syscalls
+### Filter by syscall names
 
 ```bash
+# Only trace open, read, write, and close
 sudo ./sys_call_tracer.py -p 1234 -f open,read,write,close
+
+# Use wildcards to match patterns
+sudo ./sys_call_tracer.py -p 1234 -f "open*,read*,write*"
+```
+
+### Filter by category
+
+```bash
+# Only trace file-related syscalls
+sudo ./sys_call_tracer.py -p 1234 -C file
+
+# Trace both file and network syscalls
+sudo ./sys_call_tracer.py -p 1234 -C file,network
+
+# Trace memory operations
+sudo ./sys_call_tracer.py -p 1234 -C memory
+```
+
+### Exclude specific syscalls
+
+```bash
+# Trace everything except exit calls
+sudo ./sys_call_tracer.py -p 1234 -x exit,exit_group
+
+# Exclude noisy syscalls using wildcards
+sudo ./sys_call_tracer.py -p 1234 -x "fstat*,gettid"
+```
+
+### Combine include and exclude filters
+
+```bash
+# Include file syscalls but exclude stat operations
+sudo ./sys_call_tracer.py -p 1234 -C file -x stat,lstat,fstat
+
+# Include open/read but exclude openat variants
+sudo ./sys_call_tracer.py -p 1234 -f open,read -x openat*
 ```
 
 ### Trace only the first 50 syscalls
@@ -83,6 +131,24 @@ Each line shows:
 - System call name (padded for alignment)
 - Direction (entering/exiting)
 - Arguments (for entering) or return value (for exiting)
+
+## Syscall Categories
+
+The tracer supports filtering by these syscall categories:
+
+| Category | Description | Example Syscalls |
+|----------|-------------|------------------|
+| file | File I/O operations | open, read, write, close, stat |
+| network | Network/socket operations | socket, connect, bind, sendto |
+| process | Process management | fork, execve, exit, wait4 |
+| memory | Memory management | mmap, mprotect, munmap, brk |
+| signal | Signal handling | rt_sigaction, kill, pause |
+| time | Time-related calls | gettimeofday, clock_gettime |
+| ipc | Inter-process communication | semget, shmget, msgget, futex |
+| info | System information | uname, sysinfo, getrlimit |
+
+Use `--list-categories` to see all categories with syscall counts.
+Use `-l` to see all syscalls with their associated categories.
 
 ## How It Works
 
