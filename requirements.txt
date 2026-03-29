@@ -1,0 +1,6 @@
+# No external dependencies required
+# This project uses only Python standard library modules:
+# - ctypes (for ptrace interface)
+# - os, sys, struct, signal (process control)
+# - argparse (CLI parsing)
+# - datetime (timestamp formatting)
