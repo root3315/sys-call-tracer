@@ -6,10 +6,12 @@ Uses ptrace to attach to processes and intercept system calls.
 
 import ctypes
 import ctypes.util
+import fnmatch
 import os
-import sys
-import struct
+import re
 import signal
+import struct
+import sys
 import argparse
 import time
 from datetime import datetime
@@ -130,6 +132,71 @@ SYS_CALL_TABLE = {
     363: "futex_waitv", 364: "set_mempolicy_home_node",
 }
 
+SYSCALL_CATEGORIES = {
+    "file": [
+        "open", "close", "read", "write", "lseek", "access", "stat", "fstat",
+        "lstat", "truncate", "ftruncate", "getdents", "getcwd", "chdir", "fchdir",
+        "rename", "mkdir", "rmdir", "creat", "link", "unlink", "symlink",
+        "readlink", "chmod", "fchmod", "chown", "fchown", "lchown", "umask",
+        "openat", "mkdirat", "mknodat", "fchownat", "futimesat", "newfstatat",
+        "unlinkat", "renameat", "linkat", "symlinkat", "readlinkat", "fchmodat",
+        "faccessat", "dup", "dup2", "dup3", "pipe", "pipe2", "fcntl", "flock",
+        "fsync", "fdatasync", "pread64", "pwrite64", "readv", "writev", "preadv",
+        "pwritev", "preadv2", "pwritev2", "openat2", "close_range", "fallocate",
+        "copy_file_range", "statx", "fadvise64", "fsync", "fdatasync"
+    ],
+    "network": [
+        "socket", "connect", "accept", "sendto", "recvfrom", "sendmsg", "recvmsg",
+        "shutdown", "bind", "listen", "getsockname", "getpeername", "socketpair",
+        "setsockopt", "getsockopt", "sendfile", "accept4", "sendmmsg", "recvmmsg",
+        "epoll_create", "epoll_wait", "epoll_ctl", "epoll_create1", "epoll_pwait",
+        "epoll_pwait2", "eventfd", "eventfd2", "signalfd", "signalfd4",
+        "timerfd_create", "timerfd_settime", "timerfd_gettime"
+    ],
+    "process": [
+        "fork", "vfork", "clone", "clone3", "execve", "execveat", "exit",
+        "exit_group", "wait4", "waitid", "kill", "tkill", "tgkill", "getpid",
+        "getppid", "gettid", "getpgrp", "getpgid", "setpgid", "setsid", "getsid",
+        "setuid", "setgid", "setreuid", "setregid", "setresuid", "setresgid",
+        "getuid", "getgid", "geteuid", "getegid", "getresuid", "getresgid",
+        "setfsuid", "setfsgid", "getgroups", "setgroups", "setpgid", "prctl",
+        "ptrace", "capget", "capset", "unshare", "setns", "pidfd_open",
+        "pidfd_getfd", "pidfd_send_signal", "process_vm_readv", "process_vm_writev"
+    ],
+    "memory": [
+        "mmap", "mprotect", "munmap", "mremap", "msync", "mincore", "madvise",
+        "brk", "mlock", "munlock", "mlockall", "munlockall", "mlock2",
+        "migrate_pages", "move_pages", "mbind", "set_mempolicy", "get_mempolicy",
+        "set_mempolicy_home_node", "membarrier", "userfaultfd"
+    ],
+    "signal": [
+        "rt_sigaction", "rt_sigprocmask", "rt_sigreturn", "rt_sigpending",
+        "rt_sigtimedwait", "rt_sigqueueinfo", "rt_sigsuspend", "sigaltstack",
+        "rt_tgsigqueueinfo", "alarm", "pause", "nanosleep", "clock_nanosleep"
+    ],
+    "time": [
+        "gettimeofday", "time", "clock_gettime", "clock_settime", "clock_getres",
+        "clock_adjtime", "settimeofday", "utime", "utimes", "utimensat",
+        "timer_create", "timer_settime", "timer_gettime", "timer_getoverrun",
+        "timer_delete", "times", "getitimer", "setitimer"
+    ],
+    "ipc": [
+        "semget", "semop", "semctl", "semtimedop", "shmget", "shmat", "shmctl",
+        "shmdt", "msgget", "msgsnd", "msgrcv", "msgctl", "mq_open", "mq_unlink",
+        "mq_timedsend", "mq_timedreceive", "mq_notify", "mq_getsetattr",
+        "futex", "futex_wait", "futex_wake", "futex_requeue", "futex_waitv"
+    ],
+    "info": [
+        "uname", "sysinfo", "getrlimit", "setrlimit", "getrusage", "prlimit64",
+        "syslog", "acct", "getpriority", "setpriority", "sched_yield",
+        "sched_setparam", "sched_getparam", "sched_setscheduler",
+        "sched_getscheduler", "sched_get_priority_max", "sched_get_priority_min",
+        "sched_rr_get_interval", "sched_setaffinity", "sched_getaffinity",
+        "sched_setattr", "sched_getattr", "ioprio_set", "ioprio_get", "getcpu"
+    ]
+}
+
+
 class user_regs_struct(ctypes.Structure):
     _fields_ = [
         ("r15", ctypes.c_ulonglong),
@@ -161,22 +228,27 @@ class user_regs_struct(ctypes.Structure):
         ("gs", ctypes.c_ulonglong),
     ]
 
+
 class ptrace_options(ctypes.Structure):
     _fields_ = [
         ("ptrace_flags", ctypes.c_ulong),
     ]
 
+
 def ptrace(request, pid, addr, data):
     libc.ptrace.errcheck = lambda result, func, args: result
     return libc.ptrace(request, pid, addr, data)
+
 
 def get_regs(pid):
     regs = user_regs_struct()
     ptrace(PTRACE_GETREGS, pid, 0, ctypes.byref(regs))
     return regs
 
+
 def set_regs(pid, regs):
     ptrace(PTRACE_SETREGS, pid, 0, ctypes.byref(regs))
+
 
 def wait_for_syscall(pid):
     while True:
@@ -185,9 +257,11 @@ def wait_for_syscall(pid):
         if regs.orig_rax in SYS_CALL_TABLE:
             return regs
 
+
 def trace_child():
     ptrace(PTRACE_TRACEME, 0, 0, 0)
     os.execvp(sys.argv[1], sys.argv[1:])
+
 
 def attach_to_process(pid):
     try:
@@ -200,23 +274,27 @@ def attach_to_process(pid):
         print(f"Failed to attach to process {pid}: {e}", file=sys.stderr)
         return False
 
+
 def detach_process(pid):
     try:
         ptrace(PTRACE_DETACH, pid, 0, 0)
     except Exception:
         pass
 
+
 def get_syscall_name(syscall_num):
     return SYS_CALL_TABLE.get(syscall_num, f"unknown_{syscall_num}")
 
+
 def format_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
 
 def log_syscall(pid, syscall_num, regs, entering=True):
     syscall_name = get_syscall_name(syscall_num)
     direction = "entering" if entering else "exiting"
     timestamp = format_timestamp()
-    
+
     if entering:
         arg1 = regs.rdi
         arg2 = regs.rsi
@@ -226,34 +304,139 @@ def log_syscall(pid, syscall_num, regs, entering=True):
         ret_val = regs.rax
         print(f"[{timestamp}] PID {pid} | {syscall_name:<20} | exiting  | ret: {ret_val}")
 
-def trace_process(pid, count=None, filter_syscalls=None):
+
+class SyscallFilter:
+    """Handles syscall filtering with support for names, categories, and patterns."""
+
+    def __init__(self):
+        self.include_set = set()
+        self.exclude_set = set()
+        self.include_patterns = []
+        self.exclude_patterns = []
+        self.include_categories = set()
+        self.exclude_categories = set()
+        self.mode = "include"
+
+    def add_include(self, items):
+        """Add items to include filter."""
+        for item in items:
+            if item in SYSCALL_CATEGORIES:
+                self.include_categories.add(item)
+                for syscall in SYSCALL_CATEGORIES[item]:
+                    self.include_set.add(syscall)
+            elif "*" in item or "?" in item:
+                self.include_patterns.append(item)
+            else:
+                self.include_set.add(item)
+                if item in SYS_CALL_TABLE.values():
+                    pass
+
+    def add_exclude(self, items):
+        """Add items to exclude filter."""
+        for item in items:
+            if item in SYSCALL_CATEGORIES:
+                self.exclude_categories.add(item)
+                for syscall in SYSCALL_CATEGORIES[item]:
+                    self.exclude_set.add(syscall)
+            elif "*" in item or "?" in item:
+                self.exclude_patterns.append(item)
+            else:
+                self.exclude_set.add(item)
+
+    def set_mode(self, mode):
+        """Set filter mode: 'include' or 'exclude'."""
+        if mode not in ("include", "exclude"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'include' or 'exclude'")
+        self.mode = mode
+
+    def matches_pattern(self, syscall_name, patterns):
+        """Check if syscall name matches any of the glob patterns."""
+        for pattern in patterns:
+            if fnmatch.fnmatch(syscall_name, pattern):
+                return True
+        return False
+
+    def should_trace(self, syscall_name):
+        """Determine if a syscall should be traced based on filter settings."""
+        if not self.include_set and not self.include_patterns and not self.include_categories:
+            if not self.exclude_set and not self.exclude_patterns and not self.exclude_categories:
+                return True
+
+        if self.mode == "exclude":
+            if syscall_name in self.exclude_set:
+                return False
+            if syscall_name in self.exclude_patterns:
+                return False
+            if self.matches_pattern(syscall_name, self.exclude_patterns):
+                return False
+            for cat in self.exclude_categories:
+                if syscall_name in SYSCALL_CATEGORIES.get(cat, []):
+                    return False
+            return True
+        else:
+            if self.include_categories:
+                for cat in self.include_categories:
+                    if syscall_name in SYSCALL_CATEGORIES.get(cat, []):
+                        if syscall_name not in self.exclude_set:
+                            if not self.matches_pattern(syscall_name, self.exclude_patterns):
+                                return True
+
+            if syscall_name in self.include_set:
+                if syscall_name not in self.exclude_set:
+                    if not self.matches_pattern(syscall_name, self.exclude_patterns):
+                        return True
+
+            if self.matches_pattern(syscall_name, self.include_patterns):
+                if syscall_name not in self.exclude_set:
+                    if not self.matches_pattern(syscall_name, self.exclude_patterns):
+                        return True
+
+            return False
+
+    def is_active(self):
+        """Check if any filters are active."""
+        return bool(
+            self.include_set or self.include_patterns or self.include_categories or
+            self.exclude_set or self.exclude_patterns or self.exclude_categories
+        )
+
+
+def trace_process(pid, count=None, syscall_filter=None):
     syscall_count = 0
     entering = True
-    
+
     print(f"Attaching to process {pid}...")
     print(f"Press Ctrl+C to stop tracing")
+    if syscall_filter and syscall_filter.is_active():
+        mode = syscall_filter.mode
+        if syscall_filter.include_categories:
+            print(f"Filter mode: {mode} categories: {', '.join(syscall_filter.include_categories)}")
+        if syscall_filter.include_set:
+            print(f"Filter mode: {mode} syscalls: {', '.join(sorted(syscall_filter.include_set)[:10])}{'...' if len(syscall_filter.include_set) > 10 else ''}")
+        if syscall_filter.exclude_set or syscall_filter.exclude_categories:
+            print(f"Excluding: {len(syscall_filter.exclude_set) + len(syscall_filter.exclude_categories)} items")
     print("-" * 80)
-    
+
     try:
         while True:
             if count and syscall_count >= count:
                 break
-                
+
             os.waitpid(pid, 0)
             regs = get_regs(pid)
             syscall_num = regs.orig_rax
-            
+
             if syscall_num in SYS_CALL_TABLE:
                 syscall_name = get_syscall_name(syscall_num)
-                
-                if filter_syscalls is None or syscall_name in filter_syscalls:
+
+                if syscall_filter is None or syscall_filter.should_trace(syscall_name):
                     log_syscall(pid, syscall_num, regs, entering=entering)
                     syscall_count += 1
-                
+
                 entering = not entering
-            
+
             ptrace(PTRACE_SYSCALL, pid, 0, 0)
-            
+
     except KeyboardInterrupt:
         print(f"\nTracing interrupted. Total syscalls traced: {syscall_count}")
     except Exception as e:
@@ -262,19 +445,47 @@ def trace_process(pid, count=None, filter_syscalls=None):
         detach_process(pid)
         print(f"Detached from process {pid}")
 
-def run_with_trace(command):
+
+def run_with_trace(command, count=None, syscall_filter=None):
     pid = os.fork()
     if pid == 0:
         trace_child()
     else:
         os.waitpid(pid, 0)
-        trace_process(pid)
+        trace_process(pid, count=count, syscall_filter=syscall_filter)
 
-def list_syscalls():
-    print("Available system calls:")
+
+def list_syscalls(category=None):
+    if category:
+        if category not in SYSCALL_CATEGORIES:
+            print(f"Unknown category: {category}", file=sys.stderr)
+            print(f"Available categories: {', '.join(sorted(SYSCALL_CATEGORIES.keys()))}")
+            return
+        syscalls = SYSCALL_CATEGORIES[category]
+        print(f"System calls in category '{category}':")
+        print("-" * 40)
+        for name in sorted(syscalls):
+            nums = [str(n) for n, s in SYS_CALL_TABLE.items() if s == name]
+            print(f"  {', '.join(nums):>6} | {name}")
+    else:
+        print("Available system calls:")
+        print("-" * 40)
+        for num, name in sorted(SYS_CALL_TABLE.items()):
+            categories = [cat for cat, syscalls in SYSCALL_CATEGORIES.items() if name in syscalls]
+            cat_str = f" [{', '.join(categories)}]" if categories else ""
+            print(f"  {num:4d} | {name}{cat_str}")
+
+
+def list_categories():
+    print("Available syscall categories:")
     print("-" * 40)
-    for num, name in sorted(SYS_CALL_TABLE.items()):
-        print(f"  {num:4d} | {name}")
+    for cat in sorted(SYSCALL_CATEGORIES.keys()):
+        count = len(SYSCALL_CATEGORIES[cat])
+        print(f"  {cat:<12} | {count} syscalls")
+    print()
+    print("Use -C/--category to filter by category")
+    print("Example: sudo ./sys_call_tracer.py -p 1234 -C file,network")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -282,40 +493,77 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s -p 1234              Attach to existing process
-  %(prog)s -c "ls -la"          Run command with tracing
-  %(prog)s -l                   List all syscalls
-  %(prog)s -p 1234 -f open,read Filter specific syscalls
+  %(prog)s -p 1234                    Attach to existing process
+  %(prog)s -c "ls -la"                Run command with tracing
+  %(prog)s -l                         List all syscalls
+  %(prog)s --list-categories          List syscall categories
+  %(prog)s -p 1234 -f open,read       Include only specific syscalls
+  %(prog)s -p 1234 -f open*,read*     Use wildcards for pattern matching
+  %(prog)s -p 1234 -C file,network    Filter by categories
+  %(prog)s -p 1234 -x exit,exit_group Exclude specific syscalls
+  %(prog)s -p 1234 -C file -x stat    Include file syscalls but exclude stat
         """
     )
-    
+
     parser.add_argument("-p", "--pid", type=int, help="Process ID to attach to")
     parser.add_argument("-c", "--command", help="Command to run with tracing")
     parser.add_argument("-n", "--count", type=int, help="Number of syscalls to trace")
-    parser.add_argument("-f", "--filter", help="Comma-separated list of syscalls to filter")
+    parser.add_argument("-f", "--filter", help="Comma-separated list of syscalls to include (supports wildcards: *, ?)")
+    parser.add_argument("-x", "--exclude", help="Comma-separated list of syscalls to exclude (supports wildcards: *, ?)")
+    parser.add_argument("-C", "--category", help="Comma-separated list of categories to include")
+    parser.add_argument("-X", "--exclude-category", help="Comma-separated list of categories to exclude")
     parser.add_argument("-l", "--list", action="store_true", help="List all available syscalls")
+    parser.add_argument("--list-categories", action="store_true", help="List available syscall categories")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
-    
+
     args = parser.parse_args()
-    
+
     if os.geteuid() != 0:
         print("Warning: Running without root privileges. Some operations may fail.", file=sys.stderr)
-    
+
     if args.list:
         list_syscalls()
         sys.exit(0)
-    
-    filter_syscalls = None
+
+    if args.list_categories:
+        list_categories()
+        sys.exit(0)
+
+    syscall_filter = SyscallFilter()
+
+    if args.category:
+        categories = [c.strip() for c in args.category.split(",")]
+        syscall_filter.add_include(categories)
+
+    if args.exclude_category:
+        categories = [c.strip() for c in args.exclude_category.split(",")]
+        syscall_filter.add_exclude(categories)
+
     if args.filter:
-        filter_syscalls = set(args.filter.split(","))
-    
+        items = [i.strip() for i in args.filter.split(",")]
+        syscall_filter.add_include(items)
+
+    if args.exclude:
+        items = [i.strip() for i in args.exclude.split(",")]
+        syscall_filter.add_exclude(items)
+
+    if args.filter or args.category:
+        syscall_filter.set_mode("include")
+    if args.exclude or args.exclude_category:
+        if not syscall_filter.is_active():
+            syscall_filter.set_mode("exclude")
+
+    if not syscall_filter.is_active():
+        syscall_filter = None
+
     if args.pid:
-        trace_process(args.pid, count=args.count, filter_syscalls=filter_syscalls)
+        trace_process(args.pid, count=args.count, syscall_filter=syscall_filter)
     elif args.command:
-        run_with_trace(args.command.split())
+        run_with_trace(args.command.split(), count=args.count, syscall_filter=syscall_filter)
     else:
         parser.print_help()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
