@@ -254,8 +254,7 @@ def wait_for_syscall(pid):
     while True:
         os.waitpid(pid, 0)
         regs = get_regs(pid)
-        if regs.orig_rax in SYS_CALL_TABLE:
-            return regs
+        return regs
 
 
 def trace_child():
@@ -426,14 +425,13 @@ def trace_process(pid, count=None, syscall_filter=None):
             regs = get_regs(pid)
             syscall_num = regs.orig_rax
 
-            if syscall_num in SYS_CALL_TABLE:
-                syscall_name = get_syscall_name(syscall_num)
+            syscall_name = get_syscall_name(syscall_num)
 
-                if syscall_filter is None or syscall_filter.should_trace(syscall_name):
-                    log_syscall(pid, syscall_num, regs, entering=entering)
-                    syscall_count += 1
+            if syscall_filter is None or syscall_filter.should_trace(syscall_name):
+                log_syscall(pid, syscall_num, regs, entering=entering)
+                syscall_count += 1
 
-                entering = not entering
+            entering = not entering
 
             ptrace(PTRACE_SYSCALL, pid, 0, 0)
 
