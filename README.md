@@ -30,6 +30,7 @@ sudo ./sys_call_tracer.py -c "ls -la /tmp"
 ```
 usage: sys_call_tracer.py [-h] [-p PID] [-c COMMAND] [-n COUNT] [-f FILTER] [-x EXCLUDE]
                           [-C CATEGORY] [-X EXCLUDE_CATEGORY] [-l] [--list-categories] [-v]
+                          [--format {text,json}]
 
 Trace and log system calls in real time
 
@@ -51,6 +52,7 @@ options:
   -l, --list            List all available syscalls
   --list-categories     List available syscall categories
   -v, --verbose         Enable verbose output
+  --format {text,json}  Output format (default: text)
 ```
 
 ## Examples
@@ -118,11 +120,26 @@ sudo ./sys_call_tracer.py -p 1234 -n 50
 
 ## Output Format
 
+### Text (default)
+
 ```
 [2026-03-29 14:32:15.123] PID 1234 | open                 | entering | args: 140736214016000, 0, 0
 [2026-03-29 14:32:15.124] PID 1234 | open                 | exiting  | ret: 3
 [2026-03-29 14:32:15.125] PID 1234 | read                 | entering | args: 3, 140736214015488, 8192
 [2026-03-29 14:32:15.126] PID 1234 | read                 | exiting  | ret: 1024
+```
+
+### JSON
+
+Use `--format json` to output one JSON object per line:
+
+```json
+{"timestamp": "2026-03-29 14:32:15.123", "pid": 1234, "syscall": "open", "direction": "entering", "args": {"arg1": 140736214016000, "arg2": 0, "arg3": 0}}
+{"timestamp": "2026-03-29 14:32:15.124", "pid": 1234, "syscall": "open", "direction": "exiting", "return_value": 3}
+```
+
+```bash
+sudo ./sys_call_tracer.py -p 1234 --format json
 ```
 
 Each line shows:

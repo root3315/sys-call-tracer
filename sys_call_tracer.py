@@ -7,6 +7,7 @@ Uses ptrace to attach to processes and intercept system calls.
 import ctypes
 import ctypes.util
 import fnmatch
+import json
 import os
 import re
 import signal
@@ -289,19 +290,36 @@ def format_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
 
-def log_syscall(pid, syscall_num, regs, entering=True):
+def log_syscall(pid, syscall_num, regs, entering=True, output_format="text"):
     syscall_name = get_syscall_name(syscall_num)
     direction = "entering" if entering else "exiting"
     timestamp = format_timestamp()
 
-    if entering:
-        arg1 = regs.rdi
-        arg2 = regs.rsi
-        arg3 = regs.rdx
-        print(f"[{timestamp}] PID {pid} | {syscall_name:<20} | entering | args: {arg1}, {arg2}, {arg3}")
+    if output_format == "json":
+        record = {
+            "timestamp": timestamp,
+            "pid": pid,
+            "syscall": syscall_name,
+            "direction": direction,
+        }
+        if entering:
+            record["args"] = {
+                "arg1": regs.rdi,
+                "arg2": regs.rsi,
+                "arg3": regs.rdx,
+            }
+        else:
+            record["return_value"] = regs.rax
+        print(json.dumps(record))
     else:
-        ret_val = regs.rax
-        print(f"[{timestamp}] PID {pid} | {syscall_name:<20} | exiting  | ret: {ret_val}")
+        if entering:
+            arg1 = regs.rdi
+            arg2 = regs.rsi
+            arg3 = regs.rdx
+            print(f"[{timestamp}] PID {pid} | {syscall_name:<20} | entering | args: {arg1}, {arg2}, {arg3}")
+        else:
+            ret_val = regs.rax
+            print(f"[{timestamp}] PID {pid} | {syscall_name:<20} | exiting  | ret: {ret_val}")
 
 
 class SyscallFilter:
@@ -400,21 +418,22 @@ class SyscallFilter:
         )
 
 
-def trace_process(pid, count=None, syscall_filter=None):
+def trace_process(pid, count=None, syscall_filter=None, output_format="text"):
     syscall_count = 0
     entering = True
 
-    print(f"Attaching to process {pid}...")
-    print(f"Press Ctrl+C to stop tracing")
-    if syscall_filter and syscall_filter.is_active():
-        mode = syscall_filter.mode
-        if syscall_filter.include_categories:
-            print(f"Filter mode: {mode} categories: {', '.join(syscall_filter.include_categories)}")
-        if syscall_filter.include_set:
-            print(f"Filter mode: {mode} syscalls: {', '.join(sorted(syscall_filter.include_set)[:10])}{'...' if len(syscall_filter.include_set) > 10 else ''}")
-        if syscall_filter.exclude_set or syscall_filter.exclude_categories:
-            print(f"Excluding: {len(syscall_filter.exclude_set) + len(syscall_filter.exclude_categories)} items")
-    print("-" * 80)
+    if output_format == "text":
+        print(f"Attaching to process {pid}...")
+        print(f"Press Ctrl+C to stop tracing")
+        if syscall_filter and syscall_filter.is_active():
+            mode = syscall_filter.mode
+            if syscall_filter.include_categories:
+                print(f"Filter mode: {mode} categories: {', '.join(syscall_filter.include_categories)}")
+            if syscall_filter.include_set:
+                print(f"Filter mode: {mode} syscalls: {', '.join(sorted(syscall_filter.include_set)[:10])}{'...' if len(syscall_filter.include_set) > 10 else ''}")
+            if syscall_filter.exclude_set or syscall_filter.exclude_categories:
+                print(f"Excluding: {len(syscall_filter.exclude_set) + len(syscall_filter.exclude_categories)} items")
+        print("-" * 80)
 
     try:
         while True:
@@ -428,7 +447,7 @@ def trace_process(pid, count=None, syscall_filter=None):
             syscall_name = get_syscall_name(syscall_num)
 
             if syscall_filter is None or syscall_filter.should_trace(syscall_name):
-                log_syscall(pid, syscall_num, regs, entering=entering)
+                log_syscall(pid, syscall_num, regs, entering=entering, output_format=output_format)
                 syscall_count += 1
 
             entering = not entering
@@ -444,13 +463,13 @@ def trace_process(pid, count=None, syscall_filter=None):
         print(f"Detached from process {pid}")
 
 
-def run_with_trace(command, count=None, syscall_filter=None):
+def run_with_trace(command, count=None, syscall_filter=None, output_format="text"):
     pid = os.fork()
     if pid == 0:
         trace_child()
     else:
         os.waitpid(pid, 0)
-        trace_process(pid, count=count, syscall_filter=syscall_filter)
+        trace_process(pid, count=count, syscall_filter=syscall_filter, output_format=output_format)
 
 
 def list_syscalls(category=None):
@@ -513,6 +532,7 @@ Examples:
     parser.add_argument("-l", "--list", action="store_true", help="List all available syscalls")
     parser.add_argument("--list-categories", action="store_true", help="List available syscall categories")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("--format", choices=["text", "json"], default="text", help="Output format (default: text)")
 
     args = parser.parse_args()
 
@@ -555,9 +575,9 @@ Examples:
         syscall_filter = None
 
     if args.pid:
-        trace_process(args.pid, count=args.count, syscall_filter=syscall_filter)
+        trace_process(args.pid, count=args.count, syscall_filter=syscall_filter, output_format=args.format)
     elif args.command:
-        run_with_trace(args.command.split(), count=args.count, syscall_filter=syscall_filter)
+        run_with_trace(args.command.split(), count=args.count, syscall_filter=syscall_filter, output_format=args.format)
     else:
         parser.print_help()
         sys.exit(1)
